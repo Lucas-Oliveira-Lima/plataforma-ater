@@ -10,8 +10,9 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { BrazilLocationSelect } from '@/components/ui/brazil-location-select'
 import { QrScanner } from '@/components/ui/qr-scanner'
-import type { Producer, Property } from '@/types'
+import type { Producer, Property, Crop } from '@/types'
 import { formatDate } from '@/lib/utils/dates'
+import { CULTURE_OPTIONS, CROP_STATUS_LABELS, CROP_STATUS_COLORS } from '@/lib/utils/cacau-scores'
 import { v4 as uuidv4 } from 'uuid'
 
 const SEX_LABELS: Record<string, string> = {
@@ -24,16 +25,22 @@ export default function ProducerDetailPage() {
   const { workspace } = useAuthStore()
   const [producer, setProducer] = useState<Producer | null>(null)
   const [properties, setProperties] = useState<Property[]>([])
+  const [crops, setCrops] = useState<Crop[]>([])
   const [showPropertyForm, setShowPropertyForm] = useState(false)
   const [editingProperty, setEditingProperty] = useState<Property | null>(null)
+  const [showCropForm, setShowCropForm] = useState(false)
 
   useEffect(() => {
     async function load() {
       const p = await db.producers.get(id)
       if (!p) { router.push('/producers'); return }
       setProducer(p)
-      const props = await db.properties.where('producer_id').equals(id).toArray()
+      const [props, cropsData] = await Promise.all([
+        db.properties.where('producer_id').equals(id).toArray(),
+        db.crops.where('producer_id').equals(id).sortBy('season_year'),
+      ])
       setProperties(props)
+      setCrops(cropsData.reverse())
     }
     load()
   }, [id, router])
@@ -118,6 +125,65 @@ export default function ProducerDetailPage() {
             <p className="text-xs text-gray-400 mt-1">Cadastrado em {formatDate(producer.created_at)}</p>
           </div>
         </Card>
+
+        {/* Culturas e Safras */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-gray-900">Culturas e Safras</h3>
+            <Button variant="ghost" size="sm" onClick={() => setShowCropForm(!showCropForm)}>
+              + Nova safra
+            </Button>
+          </div>
+
+          {showCropForm && (
+            <CropForm
+              producerId={id}
+              workspaceId={workspace?.id ?? ''}
+              properties={properties}
+              onSaved={(crop) => {
+                setCrops((prev) => [crop, ...prev])
+                setShowCropForm(false)
+              }}
+              onCancel={() => setShowCropForm(false)}
+            />
+          )}
+
+          {crops.length === 0 && !showCropForm ? (
+            <p className="text-gray-400 text-sm py-4 text-center">Nenhuma safra cadastrada</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {crops.map((crop) => (
+                <Link key={crop.id} href={`/crops/${crop.id}`}>
+                  <Card padding="sm" className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                      <svg className="w-5 h-5 text-amber-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 00-5.78 1.128 2.25 2.25 0 01-2.4 2.245 4.5 4.5 0 008.4-2.245c0-.399-.078-.78-.22-1.128zm0 0a15.998 15.998 0 003.388-1.62m-5.043-.025a15.994 15.994 0 011.622-3.395m3.42 3.42a15.995 15.995 0 004.764-4.648l3.876-5.814a1.151 1.151 0 00-1.597-1.597L14.146 6.32a15.996 15.996 0 00-4.649 4.763m3.42 3.42a6.776 6.776 0 00-3.42-3.42" />
+                      </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-gray-900 truncate capitalize">
+                          {CULTURE_OPTIONS.find((c) => c.value === crop.culture)?.label ?? crop.culture}
+                        </p>
+                        <Badge variant={CROP_STATUS_COLORS[crop.status]}>
+                          {CROP_STATUS_LABELS[crop.status]}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        {crop.season_year} · {crop.season_type}
+                        {crop.planted_area_ha ? ` · ${crop.planted_area_ha} ha` : ''}
+                        {crop.actual_production_kg ? ` · ${crop.actual_production_kg} kg colhidos` : ''}
+                      </p>
+                    </div>
+                    <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                    </svg>
+                  </Card>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Properties */}
         <div>
@@ -215,6 +281,168 @@ export default function ProducerDetailPage() {
         </div>
       </div>
     </>
+  )
+}
+
+// ── Inline crop form (create) ───────────────────���─────────────
+function CropForm({
+  producerId,
+  workspaceId,
+  properties,
+  onSaved,
+  onCancel,
+}: {
+  producerId: string
+  workspaceId: string
+  properties: Property[]
+  onSaved: (crop: Crop) => void
+  onCancel: () => void
+}) {
+  const [culture, setCulture] = useState('cacau')
+  const [seasonYear, setSeasonYear] = useState(new Date().getFullYear().toString())
+  const [seasonType, setSeasonType] = useState('perene')
+  const [propertyId, setPropertyId] = useState(properties[0]?.id ?? '')
+  const [plantedAreaHa, setPlantedAreaHa] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  // Cacau força season_type = perene
+  function handleCultureChange(v: string) {
+    setCulture(v)
+    if (v === 'cacau') setSeasonType('perene')
+  }
+
+  async function save() {
+    if (!culture || !seasonYear) return
+    setSaving(true)
+    const now = new Date().toISOString()
+    const crop: Crop = {
+      id: uuidv4(),
+      workspace_id: workspaceId,
+      producer_id: producerId,
+      property_id: propertyId || null,
+      culture,
+      culture_variety: null,
+      season_year: parseInt(seasonYear),
+      season_type: seasonType as Crop['season_type'],
+      planted_area_ha: plantedAreaHa ? parseFloat(plantedAreaHa) : null,
+      planted_at: null,
+      expected_harvest_at: null,
+      harvested_at: null,
+      expected_yield_kg_ha: null,
+      actual_yield_kg_ha: null,
+      expected_production_kg: null,
+      actual_production_kg: null,
+      sale_price_per_kg: null,
+      status: culture === 'cacau' ? 'em_andamento' : 'planejada',
+      loss_reason: null,
+      area_cacau_producao_ha: null,
+      area_cacau_declarada_ha: null,
+      area_app_rl_ha: null,
+      area_arrendada_ha: null,
+      area_consorcio_ha: null,
+      area_irrigada_ha: null,
+      numero_talhoes: null,
+      numero_talhoes_arrendado: null,
+      producao_ano_anterior_kg: null,
+      producao_ano_atual_kg: null,
+      preco_medio_kg: null,
+      sistema_producao: null,
+      faz_fermentacao: null,
+      tipo_fermentacao: null,
+      material_genetico: null,
+      nota_analise_tecnica: null,
+      nota_boas_praticas: null,
+      coeficiente_fazenda: null,
+      teto_kg: null,
+      teto_kg_ha: null,
+      notes: null,
+      created_at: now,
+      updated_at: now,
+    }
+    await db.crops.add(crop)
+    await enqueueSyncItem('crops', 'insert', crop.id, crop as unknown as Record<string, unknown>)
+    setSaving(false)
+    onSaved(crop)
+  }
+
+  return (
+    <Card className="mb-3 flex flex-col gap-3">
+      <h4 className="font-medium text-gray-700">Nova safra</h4>
+
+      <div className="flex flex-col gap-1">
+        <label className="text-sm font-medium text-gray-700">Cultura</label>
+        <select
+          className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
+          value={culture}
+          onChange={(e) => handleCultureChange(e.target.value)}
+        >
+          {CULTURE_OPTIONS.map((c) => (
+            <option key={c.value} value={c.value}>{c.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="flex gap-3">
+        <div className="flex-1 flex flex-col gap-1">
+          <label className="text-sm font-medium text-gray-700">Ano de referência</label>
+          <input
+            type="number"
+            className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
+            value={seasonYear}
+            onChange={(e) => setSeasonYear(e.target.value)}
+          />
+        </div>
+        <div className="flex-1 flex flex-col gap-1">
+          <label className="text-sm font-medium text-gray-700">Tipo de safra</label>
+          <select
+            className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
+            value={seasonType}
+            onChange={(e) => setSeasonType(e.target.value)}
+            disabled={culture === 'cacau'}
+          >
+            <option value="verao">Verão</option>
+            <option value="inverno">Inverno</option>
+            <option value="anual">Anual</option>
+            <option value="perene">Perene</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <label className="text-sm font-medium text-gray-700">Área plantada (ha)</label>
+        <input
+          type="number"
+          step="0.01"
+          className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
+          placeholder="0,00"
+          value={plantedAreaHa}
+          onChange={(e) => setPlantedAreaHa(e.target.value)}
+        />
+      </div>
+
+      {properties.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <label className="text-sm font-medium text-gray-700">Propriedade</label>
+          <select
+            className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
+            value={propertyId}
+            onChange={(e) => setPropertyId(e.target.value)}
+          >
+            <option value="">Sem propriedade específica</option>
+            {properties.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <Button type="button" onClick={save} loading={saving} disabled={!culture || !seasonYear} className="flex-1">
+          Salvar safra
+        </Button>
+        <Button type="button" variant="ghost" onClick={onCancel}>Cancelar</Button>
+      </div>
+    </Card>
   )
 }
 

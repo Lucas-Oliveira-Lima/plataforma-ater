@@ -12,6 +12,10 @@ import type {
   SyncQueueItem,
   ChecklistTemplate,
   ChecklistItem,
+  Crop,
+  VisitCrop,
+  FinancialRecord,
+  CacauObservacoesTecnicas,
 } from '@/types'
 
 export class ATERDatabase extends Dexie {
@@ -27,6 +31,10 @@ export class ATERDatabase extends Dexie {
   sync_queue!: Table<SyncQueueItem>
   checklist_templates!: Table<ChecklistTemplate>
   checklist_items!: Table<ChecklistItem>
+  crops!: Table<Crop>
+  visit_crops!: Table<VisitCrop>
+  financial_records!: Table<FinancialRecord>
+  cacau_observacoes_tecnicas!: Table<CacauObservacoesTecnicas>
 
   constructor() {
     super('ater-db')
@@ -55,6 +63,14 @@ export class ATERDatabase extends Dexie {
     // v4: adiciona status como campo indexado em producers
     this.version(4).stores({
       producers: 'id, workspace_id, name, status, created_at',
+    })
+
+    // v5: módulos culturas/safras, financeiro e cacau
+    this.version(5).stores({
+      crops: 'id, workspace_id, producer_id, property_id, culture, status, season_year',
+      visit_crops: '[visit_id+crop_id], visit_id, crop_id',
+      financial_records: 'id, workspace_id, producer_id, visit_id, crop_id, type, reference_date',
+      cacau_observacoes_tecnicas: 'id, workspace_id, visit_id, crop_id',
     })
   }
 }

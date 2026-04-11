@@ -20,9 +20,14 @@ import type {
   Visit, Producer, Property, VisitRecord, Recommendation,
   Form, FormField, FormResponse, FormAnswer,
   RecordType, Severity, RecommendationCategory,
-  ChecklistItem,
+  ChecklistItem, Crop, VisitCrop, CacauObservacoesTecnicas,
 } from '@/types'
 import { formatDateTime, formatDuration } from '@/lib/utils/dates'
+import {
+  CULTURE_OPTIONS, CROP_STATUS_LABELS, CROP_STATUS_COLORS,
+  CACAU_RECOMMENDATION_CATEGORIES,
+  calcNotaAnaliseTecnica, calcNotaBoasPraticas, calcTetoProdutivo,
+} from '@/lib/utils/cacau-scores'
 
 const PropertiesMap = dynamic(() => import('@/components/map/properties-map'), { ssr: false })
 
@@ -54,6 +59,12 @@ export default function VisitDetailPage() {
   const [appliedForms, setAppliedForms] = useState<(FormResponse & { form?: Form })[]>([])
   const [availableForms, setAvailableForms] = useState<Form[]>([])
 
+  const [linkedCrops, setLinkedCrops] = useState<Crop[]>([])
+  const [allProducerCrops, setAllProducerCrops] = useState<Crop[]>([])
+  const [cacauObs, setCacauObs] = useState<CacauObservacoesTecnicas | null>(null)
+  const [showCropSelector, setShowCropSelector] = useState(false)
+  const [showCacauForm, setShowCacauForm] = useState(false)
+
   const [showRecordForm, setShowRecordForm] = useState(false)
   const [showRecommendationForm, setShowRecommendationForm] = useState(false)
   const [showFormSelector, setShowFormSelector] = useState(false)
@@ -77,7 +88,7 @@ export default function VisitDetailPage() {
       setVisit(v)
       setNotes(v.notes ?? '')
 
-      const [prod, prop, recs, recoms, responses, forms, checkItems] = await Promise.all([
+      const [prod, prop, recs, recoms, responses, forms, checkItems, visitCropsLinks, obsData] = await Promise.all([
         db.producers.get(v.producer_id),
         v.property_id ? db.properties.get(v.property_id) : Promise.resolve(undefined),
         db.visit_records.where('visit_id').equals(id).toArray(),
@@ -85,6 +96,8 @@ export default function VisitDetailPage() {
         db.form_responses.where('visit_id').equals(id).toArray(),
         db.forms.filter((f) => f.is_active).toArray(),
         db.checklist_items.where('visit_id').equals(id).sortBy('order_index'),
+        db.visit_crops.where('visit_id').equals(id).toArray(),
+        db.cacau_observacoes_tecnicas.where('visit_id').equals(id).first(),
       ])
 
       setProducer(prod ?? null)
@@ -93,6 +106,18 @@ export default function VisitDetailPage() {
       setRecommendations(recoms)
       setAvailableForms(forms)
       setChecklist(checkItems)
+      setCacauObs(obsData ?? null)
+
+      // Load linked crops
+      if (visitCropsLinks.length > 0) {
+        const cropIds = visitCropsLinks.map((vc: VisitCrop) => vc.crop_id)
+        const cropsData = await Promise.all(cropIds.map((cid: string) => db.crops.get(cid)))
+        setLinkedCrops(cropsData.filter(Boolean) as Crop[])
+      }
+
+      // All crops for this producer (for linking)
+      const allCrops = await db.crops.where('producer_id').equals(v.producer_id).toArray()
+      setAllProducerCrops(allCrops)
 
       const enrichedResponses = await Promise.all(
         responses.map(async (r) => ({ ...r, form: await db.forms.get(r.form_id) }))
@@ -209,6 +234,84 @@ export default function VisitDetailPage() {
     setSelectedFormId('')
   }
 
+  async function linkCrop(cropId: string) {
+    const alreadyLinked = linkedCrops.some((c) => c.id === cropId)
+    if (alreadyLinked) return
+    const link: VisitCrop = { visit_id: id, crop_id: cropId }
+    await db.visit_crops.add(link)
+    await enqueueSyncItem('visit_crops', 'insert', `${id}_${cropId}`, link as unknown as Record<string, unknown>)
+    const crop = await db.crops.get(cropId)
+    if (crop) setLinkedCrops((prev) => [...prev, crop])
+    setShowCropSelector(false)
+  }
+
+  async function unlinkCrop(cropId: string) {
+    await db.visit_crops.delete([id, cropId])
+    await enqueueSyncItem('visit_crops', 'delete', `${id}_${cropId}`, { visit_id: id, crop_id: cropId })
+    setLinkedCrops((prev) => prev.filter((c) => c.id !== cropId))
+  }
+
+  async function saveCacauObs(data: Partial<CacauObservacoesTecnicas>) {
+    if (!workspace) return
+    const cacauCrop = linkedCrops.find((c) => c.culture === 'cacau')
+    if (!cacauCrop) return
+    const now = new Date().toISOString()
+
+    if (cacauObs) {
+      const updated = { ...data, updated_at: now }
+      await db.cacau_observacoes_tecnicas.update(cacauObs.id, updated)
+      await enqueueSyncItem('cacau_observacoes_tecnicas', 'update', cacauObs.id, { id: cacauObs.id, ...updated })
+      setCacauObs((prev) => prev ? { ...prev, ...updated } : prev)
+    } else {
+      const newObs: CacauObservacoesTecnicas = {
+        id: uuidv4(),
+        workspace_id: workspace.id,
+        visit_id: id,
+        crop_id: cacauCrop.id,
+        areas_limpas_arejadas: null, areas_bem_adensadas: null, copas_bem_formadas: null,
+        plantas_saudaveis: null, vassoura_bruxa_controlada: null, podridao_parda_controlada: null,
+        idade_media_lavoura: null, espacamento_utilizado: null, faz_analise_solo_foliar: null,
+        faz_correcao_solo: null, faz_adubacao_solo: null, faz_adubacao_foliar: null,
+        faz_controle_fungico_preventivo: null, faz_poda_manutencao: null, faz_poda_fitossanitaria: null,
+        usa_cultura_cobertura: null, usa_plantio_direto: null, usa_material_organico: null,
+        tem_plano_adubacao: null, conserva_mata_ciliar: null, usa_cerca_viva: null,
+        adota_mip: null, usa_agricultura_precisao: null, participa_acoes_comunitarias: null,
+        faz_tratamento_casqueiro: null, tem_irrigacao: null, irrigacao_eficiente: null,
+        faz_controle_biologico: null, usa_composto_organico: null, faz_renovacao_plantel: null,
+        faz_coroamento: null, controle_pragas_doencas: null, tem_viveiro: null,
+        organizacao_tecnologia: null,
+        areas_limpas_recomendacao: null, areas_limpas_como_iniciar: null,
+        areas_adensadas_recomendacao: null, areas_adensadas_como_iniciar: null,
+        copas_formadas_recomendacao: null, copas_formadas_como_iniciar: null,
+        plantas_saudaveis_recomendacao: null, plantas_saudaveis_como_iniciar: null,
+        vassoura_bruxa_recomendacao: null, vassoura_bruxa_como_iniciar: null,
+        podridao_parda_recomendacao: null, podridao_parda_como_iniciar: null,
+        analise_solo_recomendacao: null, correcao_solo_recomendacao: null,
+        adubacao_solo_recomendacao: null, adubacao_foliar_recomendacao: null,
+        controle_fungico_recomendacao: null, poda_manutencao_recomendacao: null,
+        poda_fitossanitaria_recomendacao: null,
+        cultura_cobertura_recomendacao: null, plantio_direto_recomendacao: null,
+        material_organico_recomendacao: null, plano_adubacao_recomendacao: null,
+        mata_ciliar_recomendacao: null, cerca_viva_recomendacao: null,
+        mip_recomendacao: null, agricultura_precisao_recomendacao: null,
+        acoes_comunitarias_recomendacao: null, casqueiro_recomendacao: null,
+        analise_tecnica_areas_cacau: null, analise_boas_praticas: null,
+        analise_recomendacoes_proximo_ano: null, analise_agricultura_regenerativa: null,
+        avaliacao_teto_produtivo: null,
+        created_at: now, updated_at: now,
+        ...data,
+      }
+      await db.cacau_observacoes_tecnicas.add(newObs)
+      await enqueueSyncItem('cacau_observacoes_tecnicas', 'insert', newObs.id, newObs as unknown as Record<string, unknown>)
+      setCacauObs(newObs)
+
+      // Calcular e persistir teto produtivo
+      const teto = calcTetoProdutivo(cacauCrop, newObs)
+      await db.crops.update(cacauCrop.id, { ...teto, updated_at: now })
+      await enqueueSyncItem('crops', 'update', cacauCrop.id, { id: cacauCrop.id, ...teto, updated_at: now })
+    }
+  }
+
   async function toggleChecklistItem(itemId: string, checked: boolean) {
     const now = new Date().toISOString()
     await db.checklist_items.update(itemId, { checked, updated_at: now })
@@ -287,13 +390,39 @@ export default function VisitDetailPage() {
           )}
 
           {visit.status === 'completed' && (
-            <div className="mt-3 pt-3 border-t border-gray-100">
+            <div className="mt-3 pt-3 border-t border-gray-100 flex flex-col gap-2">
               <Button variant="secondary" className="w-full" loading={generatingPdf} onClick={handleGeneratePdf}>
                 <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m.75 12l3 3m0 0l3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
                 </svg>
                 {generatingPdf ? 'Gerando PDF...' : 'Baixar relatório PDF'}
               </Button>
+              {linkedCrops.some((c) => c.culture === 'cacau') && (
+                <Button
+                  variant="secondary"
+                  className="w-full"
+                  onClick={async () => {
+                    const res = await fetch(`/api/visits/${id}/generate-pda`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ format: 'pdf' }),
+                    })
+                    if (!res.ok) { alert('Erro ao gerar o Laudo PDA'); return }
+                    const blob = await res.blob()
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `laudo-pda-${id}.pdf`
+                    a.click()
+                    URL.revokeObjectURL(url)
+                  }}
+                >
+                  <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 00-5.78 1.128 2.25 2.25 0 01-2.4 2.245 4.5 4.5 0 008.4-2.245c0-.399-.078-.78-.22-1.128zm0 0a15.998 15.998 0 003.388-1.62m-5.043-.025a15.994 15.994 0 011.622-3.395m3.42 3.42a15.995 15.995 0 004.764-4.648l3.876-5.814a1.151 1.151 0 00-1.597-1.597L14.146 6.32a15.996 15.996 0 00-4.649 4.763m3.42 3.42a6.776 6.776 0 00-3.42-3.42" />
+                  </svg>
+                  Gerar Laudo PDA (Cacau)
+                </Button>
+              )}
             </div>
           )}
         </Card>
@@ -395,6 +524,7 @@ export default function VisitDetailPage() {
             <RecommendationForm
               visitId={id}
               workspaceId={workspace?.id ?? ''}
+              hasCacau={linkedCrops.some((c) => c.culture === 'cacau')}
               onSaved={(rec) => { setRecommendations((prev) => [...prev, rec]); setShowRecommendationForm(false) }}
             />
           )}
@@ -591,6 +721,132 @@ export default function VisitDetailPage() {
           </Card>
         )}
 
+        {/* ── Safras abordadas ───────────────────────── */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-gray-900">Safras Abordadas</h3>
+            {visit.status === 'active' && allProducerCrops.length > 0 && (
+              <Button variant="ghost" size="sm" onClick={() => setShowCropSelector(!showCropSelector)}>
+                + Vincular
+              </Button>
+            )}
+          </div>
+
+          {showCropSelector && (
+            <Card className="mb-3 flex flex-col gap-2">
+              <p className="text-sm font-medium text-gray-700">Selecionar safra</p>
+              {allProducerCrops
+                .filter((c) => !linkedCrops.some((lc) => lc.id === c.id))
+                .map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => linkCrop(c.id)}
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200 hover:bg-brand-50 text-left"
+                  >
+                    <span className="text-sm font-medium capitalize">
+                      {CULTURE_OPTIONS.find((o) => o.value === c.culture)?.label ?? c.culture}
+                    </span>
+                    <span className="text-xs text-gray-400">— {c.season_year}</span>
+                    <Badge variant={CROP_STATUS_COLORS[c.status]}>{CROP_STATUS_LABELS[c.status]}</Badge>
+                  </button>
+                ))
+              }
+              {allProducerCrops.filter((c) => !linkedCrops.some((lc) => lc.id === c.id)).length === 0 && (
+                <p className="text-xs text-gray-400">Todas as safras já estão vinculadas</p>
+              )}
+              <Button type="button" variant="ghost" size="sm" onClick={() => setShowCropSelector(false)}>Fechar</Button>
+            </Card>
+          )}
+
+          {linkedCrops.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-4">Nenhuma safra vinculada</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {linkedCrops.map((crop) => (
+                <Card key={crop.id} padding="sm" className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-gray-900 capitalize">
+                        {CULTURE_OPTIONS.find((o) => o.value === crop.culture)?.label ?? crop.culture}
+                      </p>
+                      <Badge variant={CROP_STATUS_COLORS[crop.status]}>{CROP_STATUS_LABELS[crop.status]}</Badge>
+                    </div>
+                    <p className="text-xs text-gray-500">{crop.season_year}{crop.planted_area_ha ? ` · ${crop.planted_area_ha} ha` : ''}</p>
+                  </div>
+                  {visit.status === 'active' && (
+                    <button type="button" onClick={() => unlinkCrop(crop.id)} className="text-gray-300 hover:text-red-500 p-1">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── Observações Técnicas de Cacau ────��─────── */}
+        {linkedCrops.some((c) => c.culture === 'cacau') && (
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-gray-900">Observações Técnicas — Cacau</h3>
+              {visit.status === 'active' && (
+                <Button variant="ghost" size="sm" onClick={() => setShowCacauForm(!showCacauForm)}>
+                  {cacauObs ? 'Editar' : '+ Preencher'}
+                </Button>
+              )}
+            </div>
+
+            {cacauObs && !showCacauForm && (
+              <Card padding="sm">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Análise Técnica</p>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {[
+                    ['Áreas limpas/arejadas', cacauObs.areas_limpas_arejadas],
+                    ['Áreas adensadas', cacauObs.areas_bem_adensadas],
+                    ['Copas bem formadas', cacauObs.copas_bem_formadas],
+                    ['Plantas saudáveis', cacauObs.plantas_saudaveis],
+                    ['Vassoura-de-bruxa', cacauObs.vassoura_bruxa_controlada],
+                    ['Podridão-parda', cacauObs.podridao_parda_controlada],
+                  ].map(([label, value]) => value && (
+                    <div key={label as string} className="bg-gray-50 rounded-lg p-2">
+                      <p className="text-gray-400">{label as string}</p>
+                      <p className="font-medium capitalize text-gray-700">{(value as string).replace(/_/g, ' ')}</p>
+                    </div>
+                  ))}
+                </div>
+                {/* Score CSCacau */}
+                {(() => {
+                  const notaAT = calcNotaAnaliseTecnica(cacauObs)
+                  const notaBP = calcNotaBoasPraticas(cacauObs)
+                  return (
+                    <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2">
+                      <div className="bg-amber-50 rounded-xl p-2 text-center">
+                        <p className="text-xs text-gray-400">Score Análise Técnica</p>
+                        <p className="font-bold text-amber-700">{notaAT.toFixed(1)}/10</p>
+                      </div>
+                      <div className="bg-amber-50 rounded-xl p-2 text-center">
+                        <p className="text-xs text-gray-400">Score Boas Práticas</p>
+                        <p className="font-bold text-amber-700">{notaBP.toFixed(1)}/10</p>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </Card>
+            )}
+
+            {(showCacauForm || (!cacauObs && visit.status === 'active')) && (
+              <CacauObsForm
+                existing={cacauObs}
+                onSave={async (data) => { await saveCacauObs(data); setShowCacauForm(false) }}
+                onCancel={() => setShowCacauForm(false)}
+              />
+            )}
+          </div>
+        )}
+
         {/* ── Assinatura do Produtor ─────────────────── */}
         {(visit.status === 'active' || visit.signature_url) && (
           <Card>
@@ -656,12 +912,19 @@ function RecordForm({ visitId, workspaceId, onSaved }: {
 }
 
 // ── Recommendation form ───────────────────────────────────────
-function RecommendationForm({ visitId, workspaceId, onSaved }: {
-  visitId: string; workspaceId: string; onSaved: (r: Recommendation) => void
+function RecommendationForm({ visitId, workspaceId, hasCacau, onSaved }: {
+  visitId: string; workspaceId: string; hasCacau?: boolean; onSaved: (r: Recommendation) => void
 }) {
   const [category, setCategory] = useState<RecommendationCategory>('manejo')
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
+
+  const categoryOptions = hasCacau
+    ? CACAU_RECOMMENDATION_CATEGORIES.map((c) => ({ value: c.value, label: c.label }))
+    : [
+        { value: 'fertilizacao', label: 'Fertilização' }, { value: 'defensivo', label: 'Defensivo' },
+        { value: 'irrigacao', label: 'Irrigação' }, { value: 'manejo', label: 'Manejo' }, { value: 'outro', label: 'Outro' },
+      ]
 
   async function save() {
     if (!description.trim()) return
@@ -678,12 +941,148 @@ function RecommendationForm({ visitId, workspaceId, onSaved }: {
   return (
     <Card className="mb-3 flex flex-col gap-3">
       <h4 className="font-medium text-gray-700">Nova recomendação</h4>
-      <Select label="Categoria" value={category} options={[
-        { value: 'fertilizacao', label: 'Fertilização' }, { value: 'defensivo', label: 'Defensivo' },
-        { value: 'irrigacao', label: 'Irrigação' }, { value: 'manejo', label: 'Manejo' }, { value: 'outro', label: 'Outro' },
-      ]} onChange={(e) => setCategory(e.target.value as RecommendationCategory)} />
+      <Select label="Categoria" value={category} options={categoryOptions} onChange={(e) => setCategory(e.target.value as RecommendationCategory)} />
       <Textarea label="Descrição" placeholder="Descreva a recomendação técnica..." value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
       <Button onClick={save} loading={saving} disabled={!description.trim()}>Salvar recomendação</Button>
+    </Card>
+  )
+}
+
+// ── Cacau observations form ───────────────────────────────────
+const SIM_NAO_OPTIONS = [
+  { value: 'sim', label: 'Sim' },
+  { value: 'parcialmente', label: 'Parcialmente' },
+  { value: 'nao', label: 'Não' },
+]
+
+function CacauObsField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-xs font-medium text-gray-600">{label}</label>
+      <div className="flex gap-1">
+        {SIM_NAO_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            className={`flex-1 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+              value === opt.value
+                ? opt.value === 'sim' ? 'bg-green-100 border-green-400 text-green-800'
+                  : opt.value === 'parcialmente' ? 'bg-yellow-100 border-yellow-400 text-yellow-800'
+                  : 'bg-red-100 border-red-400 text-red-800'
+                : 'bg-white border-gray-200 text-gray-400'
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function CacauObsForm({ existing, onSave, onCancel }: {
+  existing: CacauObservacoesTecnicas | null
+  onSave: (data: Partial<CacauObservacoesTecnicas>) => Promise<void>
+  onCancel: () => void
+}) {
+  const [data, setData] = useState<Record<string, string>>({
+    areas_limpas_arejadas:           existing?.areas_limpas_arejadas           ?? '',
+    areas_bem_adensadas:             existing?.areas_bem_adensadas             ?? '',
+    copas_bem_formadas:              existing?.copas_bem_formadas              ?? '',
+    plantas_saudaveis:               existing?.plantas_saudaveis               ?? '',
+    vassoura_bruxa_controlada:       existing?.vassoura_bruxa_controlada       ?? '',
+    podridao_parda_controlada:       existing?.podridao_parda_controlada       ?? '',
+    faz_analise_solo_foliar:         existing?.faz_analise_solo_foliar         ?? '',
+    faz_correcao_solo:               existing?.faz_correcao_solo               ?? '',
+    faz_adubacao_solo:               existing?.faz_adubacao_solo               ?? '',
+    faz_adubacao_foliar:             existing?.faz_adubacao_foliar             ?? '',
+    faz_controle_fungico_preventivo: existing?.faz_controle_fungico_preventivo ?? '',
+    faz_poda_manutencao:             existing?.faz_poda_manutencao             ?? '',
+    faz_poda_fitossanitaria:         existing?.faz_poda_fitossanitaria         ?? '',
+    usa_cultura_cobertura:           existing?.usa_cultura_cobertura           ?? '',
+    usa_plantio_direto:              existing?.usa_plantio_direto              ?? '',
+    usa_material_organico:           existing?.usa_material_organico           ?? '',
+    tem_plano_adubacao:              existing?.tem_plano_adubacao              ?? '',
+    conserva_mata_ciliar:            existing?.conserva_mata_ciliar            ?? '',
+    usa_cerca_viva:                  existing?.usa_cerca_viva                  ?? '',
+    adota_mip:                       existing?.adota_mip                       ?? '',
+    usa_agricultura_precisao:        existing?.usa_agricultura_precisao        ?? '',
+    participa_acoes_comunitarias:    existing?.participa_acoes_comunitarias    ?? '',
+    faz_tratamento_casqueiro:        existing?.faz_tratamento_casqueiro        ?? '',
+  })
+  const [saving, setSaving] = useState(false)
+
+  function set(field: string) { return (v: string) => setData((prev) => ({ ...prev, [field]: v })) }
+
+  async function save() {
+    setSaving(true)
+    const payload = Object.fromEntries(
+      Object.entries(data).map(([k, v]) => [k, v || null])
+    )
+    await onSave(payload as Partial<CacauObservacoesTecnicas>)
+    setSaving(false)
+  }
+
+  return (
+    <Card className="flex flex-col gap-4">
+      <p className="font-medium text-amber-800">Checklist CSCacau</p>
+
+      <div>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Seção 3 — Análise Técnica da Lavoura</p>
+        <div className="flex flex-col gap-3">
+          <CacauObsField label="Áreas de produção limpas e arejadas?" value={data.areas_limpas_arejadas} onChange={set('areas_limpas_arejadas')} />
+          <CacauObsField label="Áreas estão bem adensadas?" value={data.areas_bem_adensadas} onChange={set('areas_bem_adensadas')} />
+          <CacauObsField label="Copas bem formadas, baixas e desentrelaçadas?" value={data.copas_bem_formadas} onChange={set('copas_bem_formadas')} />
+          <CacauObsField label="Plantas saudáveis / sem deficiência de nutrientes?" value={data.plantas_saudaveis} onChange={set('plantas_saudaveis')} />
+          <CacauObsField label="Vassoura-de-bruxa bem controlada?" value={data.vassoura_bruxa_controlada} onChange={set('vassoura_bruxa_controlada')} />
+          <CacauObsField label="Podridão-parda bem controlada?" value={data.podridao_parda_controlada} onChange={set('podridao_parda_controlada')} />
+        </div>
+      </div>
+
+      <div>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Seção 4 — Boas Práticas Agrícolas</p>
+        <div className="flex flex-col gap-3">
+          {[
+            ['Faz análise de solo ou foliar?', 'faz_analise_solo_foliar'],
+            ['Faz correção do solo?', 'faz_correcao_solo'],
+            ['Faz adubação de solo?', 'faz_adubacao_solo'],
+            ['Faz adubação foliar?', 'faz_adubacao_foliar'],
+            ['Faz controle fúngico preventivo?', 'faz_controle_fungico_preventivo'],
+            ['Faz poda de manutenção?', 'faz_poda_manutencao'],
+            ['Faz poda fitossanitária?', 'faz_poda_fitossanitaria'],
+          ].map(([label, field]) => (
+            <CacauObsField key={field} label={label} value={data[field]} onChange={set(field)} />
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Seção 5 — Agricultura Regenerativa</p>
+        <div className="flex flex-col gap-3">
+          {[
+            ['Usa cobertura em linha?', 'usa_cultura_cobertura'],
+            ['Revolvimento mínimo do solo?', 'usa_plantio_direto'],
+            ['Usa fertilizante orgânico?', 'usa_material_organico'],
+            ['Tem plano/recomendação de adubação?', 'tem_plano_adubacao'],
+            ['Conserva mata ciliar?', 'conserva_mata_ciliar'],
+            ['Usa cerca viva?', 'usa_cerca_viva'],
+            ['Adota MIP?', 'adota_mip'],
+            ['Usa agricultura de precisão?', 'usa_agricultura_precisao'],
+            ['Participa de ações comunitárias?', 'participa_acoes_comunitarias'],
+            ['Faz tratamento do casqueiro?', 'faz_tratamento_casqueiro'],
+          ].map(([label, field]) => (
+            <CacauObsField key={field} label={label} value={data[field]} onChange={set(field)} />
+          ))}
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <Button type="button" onClick={save} loading={saving} className="flex-1">
+          Salvar observações
+        </Button>
+        <Button type="button" variant="ghost" onClick={onCancel}>Cancelar</Button>
+      </div>
     </Card>
   )
 }

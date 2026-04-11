@@ -11,6 +11,12 @@ const SYNCABLE_TABLES = [
   'form_fields',
   'form_responses',
   'form_answers',
+  'checklist_templates',
+  'checklist_items',
+  'crops',
+  'visit_crops',
+  'financial_records',
+  'cacau_observacoes_tecnicas',
 ] as const
 
 // Itens com attempts >= MAX_SKIP são pulados no auto-sync
