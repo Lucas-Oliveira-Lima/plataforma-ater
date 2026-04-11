@@ -56,16 +56,19 @@ export default function FormDetailPage() {
       const field = fields.find((f) => f.id === fieldId)
       if (!field) continue
 
+      const isDate    = field.type === 'date'
+      const isNumeric = field.type === 'integer' || field.type === 'decimal' || field.type === 'number' || field.type === 'range'
+
       const answerId = uuidv4()
       const answer: FormAnswer = {
         id: answerId,
         response_id: responseId,
         field_id: fieldId,
-        value_text: typeof value === 'string' ? value : null,
-        value_number: typeof value === 'number' ? value : null,
-        value_date: null,
-        value_bool: typeof value === 'boolean' ? value : null,
-        value_json: Array.isArray(value) ? value : null,
+        value_text:   (!isDate && !isNumeric && typeof value === 'string') ? value : null,
+        value_number: (isNumeric && typeof value === 'number') ? value : null,
+        value_date:   (isDate && typeof value === 'string') ? value : null,
+        value_bool:   typeof value === 'boolean' ? value : null,
+        value_json:   Array.isArray(value) ? value : null,
         media_url: null,
         created_at: now,
       }

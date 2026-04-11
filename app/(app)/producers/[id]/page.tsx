@@ -8,9 +8,15 @@ import { TopBar } from '@/components/layout/top-bar'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { BrazilLocationSelect } from '@/components/ui/brazil-location-select'
+import { QrScanner } from '@/components/ui/qr-scanner'
 import type { Producer, Property } from '@/types'
 import { formatDate } from '@/lib/utils/dates'
 import { v4 as uuidv4 } from 'uuid'
+
+const SEX_LABELS: Record<string, string> = {
+  M: 'Masculino', F: 'Feminino', O: 'Outro', N: 'Prefiro não informar',
+}
 
 export default function ProducerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -71,11 +77,28 @@ export default function ProducerDetailPage() {
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-gray-900">{producer.name}</h2>
-              <Badge variant="green">Ativo</Badge>
+              <Badge variant={producer.status === 'inactive' ? 'gray' : 'green'}>
+                {producer.status === 'inactive' ? 'Inativo' : 'Ativo'}
+              </Badge>
             </div>
+
+            {producer.cpf_cnpj && (
+              <p className="text-sm text-gray-600">CPF/CNPJ: {producer.cpf_cnpj}</p>
+            )}
+            {producer.sex && (
+              <p className="text-sm text-gray-600">Sexo: {SEX_LABELS[producer.sex]}</p>
+            )}
+            {(producer.city || producer.state) && (
+              <p className="text-sm text-gray-600">
+                {[producer.city, producer.state].filter(Boolean).join(' — ')}
+              </p>
+            )}
+            {producer.locality && (
+              <p className="text-sm text-gray-600">Localidade: {producer.locality}</p>
+            )}
             {producer.phone && (
               <a href={`tel:${producer.phone}`} className="flex items-center gap-2 text-gray-600">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 4.5v2.25z" />
                 </svg>
                 {producer.phone}
@@ -83,7 +106,7 @@ export default function ProducerDetailPage() {
             )}
             {producer.email && (
               <a href={`mailto:${producer.email}`} className="flex items-center gap-2 text-gray-600">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
                 </svg>
                 {producer.email}
@@ -210,7 +233,9 @@ function PropertyForm({
   onCancel?: () => void
 }) {
   const [name, setName] = useState(existing?.name ?? '')
+  const [state, setState] = useState(existing?.state ?? '')
   const [municipality, setMunicipality] = useState(existing?.municipality ?? '')
+  const [address, setAddress] = useState(existing?.address ?? '')
   const [areaHa, setAreaHa] = useState(existing?.area_ha?.toString() ?? '')
   const [carCode, setCarCode] = useState(existing?.car_code ?? '')
   const [gpsLat, setGpsLat] = useState(existing?.gps_lat?.toString() ?? '')
@@ -240,7 +265,9 @@ function PropertyForm({
       workspace_id: workspaceId,
       producer_id: producerId,
       name,
+      state: state || null,
       municipality,
+      address: address || null,
       car_code: carCode || null,
       area_ha: areaHa ? parseFloat(areaHa) : null,
       gps_lat: gpsLat ? parseFloat(gpsLat) : null,
@@ -262,34 +289,68 @@ function PropertyForm({
   return (
     <Card className="mb-3 flex flex-col gap-3">
       <h4 className="font-medium text-gray-700">{existing ? 'Editar propriedade' : 'Nova propriedade'}</h4>
+
+      {/* Nome */}
       <input
         className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
         placeholder="Nome da propriedade *"
         value={name}
         onChange={(e) => setName(e.target.value)}
       />
+
+      {/* Estado + Município via IBGE */}
+      <BrazilLocationSelect
+        stateValue={state}
+        cityValue={municipality}
+        onStateChange={setState}
+        onCityChange={setMunicipality}
+        required
+      />
+
+      {/* Endereço */}
       <input
         className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
-        placeholder="Município *"
-        value={municipality}
-        onChange={(e) => setMunicipality(e.target.value)}
+        placeholder="Endereço (estrada, km, bairro...)"
+        value={address}
+        onChange={(e) => setAddress(e.target.value)}
       />
-      <div className="flex gap-2">
-        <input
-          className="flex-1 rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
-          placeholder="Área (ha)"
-          type="number"
-          value={areaHa}
-          onChange={(e) => setAreaHa(e.target.value)}
-        />
-        <input
-          className="flex-1 rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
-          placeholder="Código CAR"
-          value={carCode}
-          onChange={(e) => setCarCode(e.target.value)}
-        />
+
+      {/* Área */}
+      <input
+        className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500"
+        placeholder="Área (ha)"
+        type="number"
+        value={areaHa}
+        onChange={(e) => setAreaHa(e.target.value)}
+      />
+
+      {/* CAR + Scanner */}
+      <div className="flex flex-col gap-2">
+        <label className="text-sm font-medium text-gray-700">Código CAR</label>
+        <div className="flex gap-2">
+          <input
+            className="flex-1 rounded-xl border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono text-sm"
+            placeholder="UF-0000000-HASH"
+            value={carCode}
+            onChange={(e) => setCarCode(e.target.value)}
+          />
+          {carCode && (
+            <button
+              type="button"
+              onClick={() => setCarCode('')}
+              className="px-3 text-gray-400 hover:text-red-500"
+              title="Limpar"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+        <QrScanner onResult={setCarCode} label="Escanear QR Code do CAR" />
       </div>
-      {/* GPS da propriedade */}
+
+      {/* GPS */}
       <div className="flex gap-2 items-end">
         <div className="flex-1">
           <input
@@ -311,19 +372,20 @@ function PropertyForm({
             onChange={(e) => setGpsLng(e.target.value)}
           />
         </div>
-        <Button variant="secondary" onClick={captureGps} loading={capturingGps} className="shrink-0">
+        <Button type="button" variant="secondary" onClick={captureGps} loading={capturingGps} className="shrink-0">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
             <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
           </svg>
         </Button>
       </div>
+
       <div className="flex gap-2">
-        <Button onClick={save} loading={saving} disabled={!name || !municipality} className="flex-1">
+        <Button type="button" onClick={save} loading={saving} disabled={!name || !municipality} className="flex-1">
           {existing ? 'Salvar alterações' : 'Salvar propriedade'}
         </Button>
         {onCancel && (
-          <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+          <Button type="button" variant="ghost" onClick={onCancel}>Cancelar</Button>
         )}
       </div>
     </Card>

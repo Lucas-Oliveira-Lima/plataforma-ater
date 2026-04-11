@@ -34,6 +34,9 @@ export interface Profile {
   created_at: string
 }
 
+export type ProducerSex = 'M' | 'F' | 'O' | 'N'
+export type ProducerStatus = 'active' | 'inactive'
+
 export interface Producer {
   id: string
   workspace_id: string
@@ -41,6 +44,12 @@ export interface Producer {
   phone: string | null
   email: string | null
   notes: string | null
+  cpf_cnpj: string | null
+  sex: ProducerSex | null
+  state: string | null
+  city: string | null
+  locality: string | null
+  status: ProducerStatus
   created_at: string
   updated_at: string
 }
@@ -50,7 +59,9 @@ export interface Property {
   workspace_id: string
   producer_id: string
   name: string
+  state: string | null
   municipality: string
+  address: string | null
   car_code: string | null
   area_ha: number | null
   gps_lat: number | null

@@ -14,7 +14,7 @@ const schema = z.object({
   workspace_name: z.string().min(3, 'Nome da organização muito curto').optional(),
   invite_code: z.string().optional(),
   email: z.string().email('E-mail inválido'),
-  password: z.string().min(6, 'Mínimo 6 caracteres'),
+  password: z.string().min(8, 'Mínimo 8 caracteres'),
 }).refine(
   (d) => d.invite_code?.trim() || d.workspace_name?.trim(),
   { message: 'Informe o nome da organização ou um código de convite', path: ['workspace_name'] }
@@ -33,15 +33,27 @@ export default function RegisterPage() {
     setError(null)
     const supabase = createClient()
 
-    const inviteCode = data.invite_code?.trim()
+    const inviteToken = data.invite_code?.trim() || undefined
+
+    // Pré-validar o token antes de criar a conta (evita surpresas pós-cadastro)
+    if (inviteToken) {
+      const { data: tokenCheck } = await supabase.rpc('check_invite_token', {
+        token_input: inviteToken,
+      })
+      if (!tokenCheck) {
+        setError('Código de convite inválido ou expirado. Solicite um novo convite ao administrador.')
+        return
+      }
+    }
+
     const { data: authData, error: signUpError } = await supabase.auth.signUp({
       email: data.email,
       password: data.password,
       options: {
         data: {
           full_name: data.full_name,
-          workspace_name: inviteCode ? undefined : data.workspace_name,
-          invite_workspace_id: inviteCode || undefined,
+          workspace_name: inviteToken ? undefined : data.workspace_name,
+          invite_token: inviteToken,
         },
       },
     })

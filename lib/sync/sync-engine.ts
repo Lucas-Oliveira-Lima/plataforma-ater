@@ -46,6 +46,13 @@ export async function runSync(
       continue
     }
 
+    // Rejeitar table_name fora da whitelist antes de qualquer chamada à API
+    if (!SYNCABLE_TABLES.includes(item.table_name as typeof SYNCABLE_TABLES[number])) {
+      await db.sync_queue.delete(item.id)
+      discarded++
+      continue
+    }
+
     try {
       if (item.operation === 'insert' || item.operation === 'update') {
         const { error } = await supabase

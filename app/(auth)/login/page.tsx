@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useForm } from 'react-hook-form'
@@ -11,20 +11,38 @@ import { Input } from '@/components/ui/input'
 
 const schema = z.object({
   email: z.string().email('E-mail inválido'),
-  password: z.string().min(6, 'Mínimo 6 caracteres'),
+  password: z.string().min(8, 'Mínimo 8 caracteres'),
 })
 
 type FormData = z.infer<typeof schema>
 
+// Bloqueio progressivo: 3 falhas = 30s, 5+ falhas = 5 min
+const LOCKOUT_THRESHOLDS: [number, number][] = [
+  [5, 5 * 60 * 1000],
+  [3, 30 * 1000],
+]
+
 export default function LoginPage() {
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
+  const failedAttempts = useRef(0)
+  const lockedUntil = useRef<number | null>(null)
+  const [lockMsg, setLockMsg] = useState<string | null>(null)
+
   const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
   })
 
   async function onSubmit(data: FormData) {
+    // Verificar lockout ativo
+    if (lockedUntil.current && Date.now() < lockedUntil.current) {
+      const secs = Math.ceil((lockedUntil.current - Date.now()) / 1000)
+      setLockMsg(`Muitas tentativas. Aguarde ${secs}s antes de tentar novamente.`)
+      return
+    }
+    setLockMsg(null)
     setError(null)
+
     const supabase = createClient()
     const { error } = await supabase.auth.signInWithPassword({
       email: data.email,
@@ -32,10 +50,24 @@ export default function LoginPage() {
     })
 
     if (error) {
+      failedAttempts.current += 1
+      const attempts = failedAttempts.current
+
+      for (const [threshold, delay] of LOCKOUT_THRESHOLDS) {
+        if (attempts >= threshold) {
+          lockedUntil.current = Date.now() + delay
+          const secs = delay / 1000 >= 60 ? `${delay / 60000} min` : `${delay / 1000}s`
+          setLockMsg(`Muitas tentativas. Aguarde ${secs} antes de tentar novamente.`)
+          break
+        }
+      }
+
       setError('E-mail ou senha inválidos')
       return
     }
 
+    failedAttempts.current = 0
+    lockedUntil.current = null
     router.push('/dashboard')
     router.refresh()
   }
@@ -77,13 +109,25 @@ export default function LoginPage() {
               {...register('password')}
             />
 
-            {error && (
+            {lockMsg && (
+              <div className="bg-orange-50 text-orange-700 rounded-xl px-4 py-3 text-sm">
+                {lockMsg}
+              </div>
+            )}
+
+            {error && !lockMsg && (
               <div className="bg-red-50 text-red-700 rounded-xl px-4 py-3 text-sm">
                 {error}
               </div>
             )}
 
-            <Button type="submit" size="lg" loading={isSubmitting} className="mt-2 w-full">
+            <Button
+              type="submit"
+              size="lg"
+              loading={isSubmitting}
+              disabled={!!(lockedUntil.current && Date.now() < lockedUntil.current)}
+              className="mt-2 w-full"
+            >
               Entrar
             </Button>
           </form>

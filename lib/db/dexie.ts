@@ -51,6 +51,11 @@ export class ATERDatabase extends Dexie {
       checklist_templates: 'id, workspace_id',
       checklist_items: 'id, visit_id, workspace_id',
     })
+
+    // v4: adiciona status como campo indexado em producers
+    this.version(4).stores({
+      producers: 'id, workspace_id, name, status, created_at',
+    })
   }
 }
 

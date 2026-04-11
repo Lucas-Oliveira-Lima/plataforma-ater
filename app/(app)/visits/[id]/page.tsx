@@ -83,7 +83,7 @@ export default function VisitDetailPage() {
         db.visit_records.where('visit_id').equals(id).toArray(),
         db.recommendations.where('visit_id').equals(id).toArray(),
         db.form_responses.where('visit_id').equals(id).toArray(),
-        db.forms.where('is_active').equals(1).toArray(),
+        db.forms.filter((f) => f.is_active).toArray(),
         db.checklist_items.where('visit_id').equals(id).sortBy('order_index'),
       ])
 
@@ -180,16 +180,22 @@ export default function VisitDetailPage() {
     await enqueueSyncItem('form_responses', 'insert', responseId, response as unknown as Record<string, unknown>)
 
     for (const [fieldId, value] of Object.entries(answers)) {
+      const field = selectedFormFields.find((f) => f.id === fieldId)
+      if (!field) continue
+
+      const isDate    = field.type === 'date'
+      const isNumeric = field.type === 'integer' || field.type === 'decimal' || field.type === 'number' || field.type === 'range'
+
       const answerId = uuidv4()
       const answer: FormAnswer = {
         id: answerId,
         response_id: responseId,
         field_id: fieldId,
-        value_text: typeof value === 'string' ? value : null,
-        value_number: typeof value === 'number' ? value : null,
-        value_date: null,
-        value_bool: typeof value === 'boolean' ? value : null,
-        value_json: Array.isArray(value) ? value : null,
+        value_text:   (!isDate && !isNumeric && typeof value === 'string') ? value : null,
+        value_number: (isNumeric && typeof value === 'number') ? value : null,
+        value_date:   (isDate && typeof value === 'string') ? value : null,
+        value_bool:   typeof value === 'boolean' ? value : null,
+        value_json:   Array.isArray(value) ? value : null,
         media_url: null,
         created_at: now,
       }
