@@ -51,6 +51,9 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
   const [activeTab, setActiveTab] = useState<'geral' | 'financeiro' | 'cacau'>('geral')
+  const [showKoboImport, setShowKoboImport] = useState(false)
+  const [koboImporting, setKoboImporting] = useState(false)
+  const [koboResult, setKoboResult] = useState<{ created: number; updated: number; errors: string[] } | null>(null)
 
   useEffect(() => {
     if (!profile) return
@@ -236,6 +239,29 @@ export default function AdminPage() {
     }
   }
 
+  async function handleKoboImport(formType: 'diagnostico' | 'visita_cacau', file: File) {
+    setKoboImporting(true)
+    setKoboResult(null)
+    try {
+      const text = await file.text()
+      const submissions = JSON.parse(text)
+      const arr = Array.isArray(submissions) ? submissions : submissions.results ?? [submissions]
+
+      const res = await fetch('/api/kobo/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ form_type: formType, submissions: arr }),
+      })
+      const data = await res.json()
+      setKoboResult(data)
+      if (res.ok) load()
+    } catch (err) {
+      setKoboResult({ created: 0, updated: 0, errors: [String(err)] })
+    } finally {
+      setKoboImporting(false)
+    }
+  }
+
   const totalVisits = techStats.reduce((s, t) => s + t.visitsTotal, 0)
   const totalDone = techStats.reduce((s, t) => s + t.visitsDone, 0)
 
@@ -291,6 +317,75 @@ export default function AdminPage() {
           </svg>
           {exporting ? 'Exportando...' : 'Exportar dados completos (Excel)'}
         </Button>
+
+        {/* Kobo Import */}
+        <Card padding="sm">
+          <button
+            className="w-full flex items-center justify-between"
+            onClick={() => { setShowKoboImport((v) => !v); setKoboResult(null) }}
+          >
+            <span className="flex items-center gap-2 text-sm font-medium text-gray-700">
+              <svg className="w-4 h-4 text-brand-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+              </svg>
+              Importar dados do KoboToolbox
+            </span>
+            <svg className={`w-4 h-4 text-gray-400 transition-transform ${showKoboImport ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {showKoboImport && (
+            <div className="mt-4 flex flex-col gap-4">
+              <p className="text-xs text-gray-500">
+                Exporte as submissões do KoboToolbox em formato <strong>JSON</strong> e importe aqui.
+                Use <em>Diagnóstico</em> para criar/atualizar produtores e propriedades;
+                use <em>Visita Técnica</em> para importar visitas, safras e observações CSCacau.
+              </p>
+
+              <KoboFileInput
+                label="Formulário de Diagnóstico / Linha de Base"
+                description="Cria ou atualiza produtores e propriedades"
+                accept=".json"
+                loading={koboImporting}
+                onFile={(file) => handleKoboImport('diagnostico', file)}
+              />
+
+              <KoboFileInput
+                label="Formulário de Visita Técnica de Cacau"
+                description="Importa visitas, safras cacau e observações CSCacau"
+                accept=".json"
+                loading={koboImporting}
+                onFile={(file) => handleKoboImport('visita_cacau', file)}
+              />
+
+              {koboImporting && (
+                <p className="text-sm text-brand-600 text-center animate-pulse">Importando submissões...</p>
+              )}
+
+              {koboResult && (
+                <div className={`rounded-xl p-3 text-sm ${koboResult.errors.length > 0 ? 'bg-yellow-50 border border-yellow-200' : 'bg-green-50 border border-green-200'}`}>
+                  <p className="font-semibold mb-1">
+                    {koboResult.errors.length === 0 ? 'Importação concluída' : 'Importação com avisos'}
+                  </p>
+                  <p className="text-gray-600">
+                    {koboResult.created} criados · {koboResult.updated} atualizados
+                  </p>
+                  {koboResult.errors.length > 0 && (
+                    <details className="mt-2">
+                      <summary className="text-xs text-yellow-700 cursor-pointer">{koboResult.errors.length} erro(s)</summary>
+                      <ul className="mt-1 space-y-1">
+                        {koboResult.errors.map((e, i) => (
+                          <li key={i} className="text-xs text-red-600 bg-red-50 rounded px-2 py-1">{e}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
 
         {/* Tabs */}
         <div className="flex border-b border-gray-200">
@@ -592,5 +687,35 @@ export default function AdminPage() {
 
       </div>
     </>
+  )
+}
+
+// ── KoboFileInput ─────────────────────────────────────────────
+function KoboFileInput({ label, description, accept, loading, onFile }: {
+  label: string
+  description: string
+  accept: string
+  loading: boolean
+  onFile: (file: File) => void
+}) {
+  return (
+    <div>
+      <p className="text-xs font-semibold text-gray-700 mb-0.5">{label}</p>
+      <p className="text-xs text-gray-400 mb-2">{description}</p>
+      <label className={`flex items-center justify-center gap-2 w-full px-4 py-3 rounded-xl border-2 border-dashed transition-colors cursor-pointer text-sm font-medium
+        ${loading ? 'border-gray-200 text-gray-300 pointer-events-none' : 'border-brand-300 text-brand-600 hover:bg-brand-50'}`}>
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+        </svg>
+        Selecionar arquivo JSON
+        <input
+          type="file"
+          accept={accept}
+          className="hidden"
+          disabled={loading}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) { onFile(f); e.target.value = '' } }}
+        />
+      </label>
+    </div>
   )
 }
