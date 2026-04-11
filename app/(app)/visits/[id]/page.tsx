@@ -20,12 +20,13 @@ import type {
   Visit, Producer, Property, VisitRecord, Recommendation,
   Form, FormField, FormResponse, FormAnswer,
   RecordType, Severity, RecommendationCategory,
-  ChecklistItem, Crop, VisitCrop, CacauObservacoesTecnicas,
+  ChecklistItem, Crop, VisitCrop, CacauObservacoesTecnicas, FinancialRecord,
 } from '@/types'
 import { formatDateTime, formatDuration } from '@/lib/utils/dates'
 import {
   CULTURE_OPTIONS, CROP_STATUS_LABELS, CROP_STATUS_COLORS,
   CACAU_RECOMMENDATION_CATEGORIES,
+  RECEITA_CATEGORIES, DESPESA_CATEGORIES, CACAU_SUBCATEGORIES_INSUMOS,
   calcNotaAnaliseTecnica, calcNotaBoasPraticas, calcTetoProdutivo,
 } from '@/lib/utils/cacau-scores'
 
@@ -65,6 +66,9 @@ export default function VisitDetailPage() {
   const [showCropSelector, setShowCropSelector] = useState(false)
   const [showCacauForm, setShowCacauForm] = useState(false)
 
+  const [visitFinancials, setVisitFinancials] = useState<FinancialRecord[]>([])
+  const [showFinancialForm, setShowFinancialForm] = useState(false)
+
   const [showRecordForm, setShowRecordForm] = useState(false)
   const [showRecommendationForm, setShowRecommendationForm] = useState(false)
   const [showFormSelector, setShowFormSelector] = useState(false)
@@ -88,7 +92,7 @@ export default function VisitDetailPage() {
       setVisit(v)
       setNotes(v.notes ?? '')
 
-      const [prod, prop, recs, recoms, responses, forms, checkItems, visitCropsLinks, obsData] = await Promise.all([
+      const [prod, prop, recs, recoms, responses, forms, checkItems, visitCropsLinks, obsData, finData] = await Promise.all([
         db.producers.get(v.producer_id),
         v.property_id ? db.properties.get(v.property_id) : Promise.resolve(undefined),
         db.visit_records.where('visit_id').equals(id).toArray(),
@@ -98,6 +102,7 @@ export default function VisitDetailPage() {
         db.checklist_items.where('visit_id').equals(id).sortBy('order_index'),
         db.visit_crops.where('visit_id').equals(id).toArray(),
         db.cacau_observacoes_tecnicas.where('visit_id').equals(id).first(),
+        db.financial_records.where('visit_id').equals(id).toArray(),
       ])
 
       setProducer(prod ?? null)
@@ -107,6 +112,7 @@ export default function VisitDetailPage() {
       setAvailableForms(forms)
       setChecklist(checkItems)
       setCacauObs(obsData ?? null)
+      setVisitFinancials(finData)
 
       // Load linked crops
       if (visitCropsLinks.length > 0) {
@@ -312,6 +318,14 @@ export default function VisitDetailPage() {
     }
   }
 
+  async function saveVisitMeta(fields: Partial<Pick<Visit, 'cycle_number' | 'producer_rating_score' | 'preferred_visit_frequency'>>) {
+    if (!visit) return
+    const now = new Date().toISOString()
+    await db.visits.update(id, { ...fields, updated_at: now })
+    await enqueueSyncItem('visits', 'update', id, { id, ...fields, updated_at: now })
+    setVisit((prev) => prev ? { ...prev, ...fields } : prev)
+  }
+
   async function toggleChecklistItem(itemId: string, checked: boolean) {
     const now = new Date().toISOString()
     await db.checklist_items.update(itemId, { checked, updated_at: now })
@@ -388,6 +402,51 @@ export default function VisitDetailPage() {
               </Button>
             </div>
           )}
+
+          {/* Ciclo de visita + avaliação do produtor */}
+          <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">Ciclo de visita</label>
+              <select
+                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400"
+                value={visit.cycle_number ?? ''}
+                disabled={visit.status === 'completed'}
+                onChange={(e) => saveVisitMeta({ cycle_number: e.target.value ? Number(e.target.value) : null })}
+              >
+                <option value="">—</option>
+                {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                  <option key={n} value={n}>{n}ª visita</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">Nota do produtor (0–10)</label>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400"
+                value={visit.producer_rating_score ?? ''}
+                disabled={visit.status === 'completed'}
+                onChange={(e) => saveVisitMeta({ producer_rating_score: e.target.value !== '' ? Number(e.target.value) : null })}
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs text-gray-500 block mb-1">Frequência desejada de visitas</label>
+              <select
+                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50 disabled:text-gray-400"
+                value={visit.preferred_visit_frequency ?? ''}
+                disabled={visit.status === 'completed'}
+                onChange={(e) => saveVisitMeta({ preferred_visit_frequency: (e.target.value as Visit['preferred_visit_frequency']) || null })}
+              >
+                <option value="">Não informado</option>
+                <option value="mensal">Mensal</option>
+                <option value="bimestral">Bimestral</option>
+                <option value="trimestral">Trimestral</option>
+                <option value="semestral">Semestral</option>
+              </select>
+            </div>
+          </div>
 
           {visit.status === 'completed' && (
             <div className="mt-3 pt-3 border-t border-gray-100 flex flex-col gap-2">
@@ -787,7 +846,53 @@ export default function VisitDetailPage() {
           )}
         </div>
 
-        {/* ── Observações Técnicas de Cacau ────��─────── */}
+        {/* ── Financeiro da Visita ───────────────────── */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-gray-900">Financeiro</h3>
+            {visit.status === 'active' && (
+              <Button variant="ghost" size="sm" onClick={() => setShowFinancialForm(!showFinancialForm)}>
+                + Lançar
+              </Button>
+            )}
+          </div>
+
+          {showFinancialForm && (
+            <VisitFinancialForm
+              visitId={id}
+              producerId={visit.producer_id}
+              workspaceId={workspace?.id ?? ''}
+              linkedCrops={linkedCrops}
+              onSaved={(rec) => { setVisitFinancials((prev) => [...prev, rec]); setShowFinancialForm(false) }}
+              onCancel={() => setShowFinancialForm(false)}
+            />
+          )}
+
+          {visitFinancials.length === 0 && !showFinancialForm ? (
+            <p className="text-sm text-gray-400 text-center py-4">Nenhum lançamento registrado</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {visitFinancials.map((f) => (
+                <Card key={f.id} padding="sm" className="flex items-center gap-3">
+                  <div className={`w-2 h-8 rounded-full ${f.type === 'receita' ? 'bg-green-400' : 'bg-red-400'}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-800">{f.description || f.category}</p>
+                    <p className="text-xs text-gray-400">{f.category}{f.subcategory ? ` · ${f.subcategory}` : ''}</p>
+                  </div>
+                  <span className={`text-sm font-semibold ${f.type === 'receita' ? 'text-green-700' : 'text-red-700'}`}>
+                    {f.type === 'receita' ? '+' : '-'}R$ {f.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </span>
+                </Card>
+              ))}
+              <div className="flex justify-between text-xs text-gray-500 px-1 pt-1">
+                <span>Receitas: <span className="text-green-700 font-semibold">R$ {visitFinancials.filter(f => f.type === 'receita').reduce((s, f) => s + f.amount, 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span></span>
+                <span>Despesas: <span className="text-red-700 font-semibold">R$ {visitFinancials.filter(f => f.type === 'despesa').reduce((s, f) => s + f.amount, 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span></span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Observações Técnicas de Cacau ───────────── */}
         {linkedCrops.some((c) => c.culture === 'cacau') && (
           <div>
             <div className="flex items-center justify-between mb-3">
@@ -944,6 +1049,151 @@ function RecommendationForm({ visitId, workspaceId, hasCacau, onSaved }: {
       <Select label="Categoria" value={category} options={categoryOptions} onChange={(e) => setCategory(e.target.value as RecommendationCategory)} />
       <Textarea label="Descrição" placeholder="Descreva a recomendação técnica..." value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
       <Button onClick={save} loading={saving} disabled={!description.trim()}>Salvar recomendação</Button>
+    </Card>
+  )
+}
+
+// ── Visit financial form ──────────────────────────────────────
+function VisitFinancialForm({ visitId, producerId, workspaceId, linkedCrops, onSaved, onCancel }: {
+  visitId: string
+  producerId: string
+  workspaceId: string
+  linkedCrops: Crop[]
+  onSaved: (r: FinancialRecord) => void
+  onCancel: () => void
+}) {
+  const [type, setType] = useState<'receita' | 'despesa'>('despesa')
+  const [category, setCategory] = useState('')
+  const [subcategory, setSubcategory] = useState('')
+  const [description, setDescription] = useState('')
+  const [amount, setAmount] = useState('')
+  const [cropId, setCropId] = useState(linkedCrops[0]?.id ?? '')
+  const [saving, setSaving] = useState(false)
+
+  const hasCacau = linkedCrops.some((c) => c.culture === 'cacau')
+  const categories = type === 'receita' ? RECEITA_CATEGORIES : DESPESA_CATEGORIES
+  const cacauSubcats = CACAU_SUBCATEGORIES_INSUMOS.filter((s) => s.category === category)
+
+  async function save() {
+    if (!category || !amount || isNaN(Number(amount))) return
+    setSaving(true)
+    const id = uuidv4()
+    const now = new Date().toISOString()
+    const rec: FinancialRecord = {
+      id,
+      workspace_id: workspaceId,
+      producer_id: producerId,
+      property_id: null,
+      visit_id: visitId,
+      crop_id: cropId || null,
+      type,
+      category,
+      subcategory: subcategory || null,
+      description: description || null,
+      amount: Number(amount),
+      quantity: null,
+      unit: null,
+      reference_date: now.slice(0, 10),
+      reference_period: null,
+      is_baseline: false,
+      notes: null,
+      created_at: now,
+      updated_at: now,
+    }
+    await db.financial_records.add(rec)
+    await enqueueSyncItem('financial_records', 'insert', id, rec as unknown as Record<string, unknown>)
+    setSaving(false)
+    onSaved(rec)
+  }
+
+  return (
+    <Card className="mb-3 flex flex-col gap-3">
+      <h4 className="font-medium text-gray-700">Lançamento financeiro</h4>
+
+      {/* Tipo */}
+      <div className="flex gap-2">
+        {(['receita', 'despesa'] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => { setType(t); setCategory(''); setSubcategory('') }}
+            className={`flex-1 py-2 text-sm font-medium rounded-xl border transition-colors ${
+              type === t
+                ? t === 'receita' ? 'bg-green-100 border-green-400 text-green-800' : 'bg-red-100 border-red-400 text-red-800'
+                : 'bg-white border-gray-200 text-gray-400'
+            }`}
+          >
+            {t === 'receita' ? 'Receita' : 'Despesa'}
+          </button>
+        ))}
+      </div>
+
+      {/* Safra */}
+      {linkedCrops.length > 0 && (
+        <Select
+          label="Safra"
+          value={cropId}
+          options={[
+            { value: '', label: 'Nenhuma' },
+            ...linkedCrops.map((c) => ({
+              value: c.id,
+              label: `${CULTURE_OPTIONS.find((o) => o.value === c.culture)?.label ?? c.culture} ${c.season_year}`,
+            })),
+          ]}
+          onChange={(e) => setCropId(e.target.value)}
+        />
+      )}
+
+      {/* Categoria */}
+      <Select
+        label="Categoria"
+        value={category}
+        options={[{ value: '', label: 'Selecione...' }, ...categories.map((c) => ({ value: c.value, label: c.label }))]}
+        onChange={(e) => { setCategory(e.target.value); setSubcategory('') }}
+      />
+
+      {/* Subcategoria cacau */}
+      {hasCacau && category && cacauSubcats.length > 0 && (
+        <Select
+          label="Subcategoria"
+          value={subcategory}
+          options={[{ value: '', label: 'Nenhuma' }, ...cacauSubcats.map((s) => ({ value: s.value, label: s.label }))]}
+          onChange={(e) => setSubcategory(e.target.value)}
+        />
+      )}
+
+      {/* Descrição e valor */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="col-span-2">
+          <label className="text-xs font-medium text-gray-500 block mb-1">Descrição (opcional)</label>
+          <input
+            type="text"
+            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            placeholder="Ex: Venda 200 kg cacau seco"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-gray-500 block mb-1">Valor (R$)</label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            placeholder="0,00"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <Button type="button" onClick={save} loading={saving} disabled={!category || !amount} className="flex-1">
+          Salvar
+        </Button>
+        <Button type="button" variant="ghost" onClick={onCancel}>Cancelar</Button>
+      </div>
     </Card>
   )
 }

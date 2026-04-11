@@ -91,6 +91,10 @@ export interface Visit {
   scheduled_at: string | null
   signature_url: string | null
   synced_at: string | null
+  cycle_number: number | null
+  producer_rating_score: number | null
+  preferred_visit_frequency: 'mensal' | 'bimestral' | 'trimestral' | 'semestral' | null
+  pda_generated_at: string | null
   created_at: string
   updated_at: string
 }

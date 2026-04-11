@@ -73,6 +73,10 @@ export default function NewVisitPage() {
       scheduled_at: isScheduled ? new Date(scheduledAt).toISOString() : null,
       signature_url: null,
       synced_at: null,
+      cycle_number: null,
+      producer_rating_score: null,
+      preferred_visit_frequency: null,
+      pda_generated_at: null,
       created_at: now,
       updated_at: now,
     }
